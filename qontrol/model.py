@@ -11,6 +11,152 @@ from jax import Array
 from jaxtyping import ArrayLike
 
 
+def _initialize_model(
+    H_function: callable, tsave_or_function: ArrayLike | callable
+) -> [callable, callable]:
+    H_function = jtu.Partial(H_function)
+    if callable(tsave_or_function):
+        tsave_function = jtu.Partial(tsave_or_function)
+    else:
+        tsave_function = jtu.Partial(lambda _: tsave_or_function)
+    return H_function, tsave_function
+
+
+class Model(eqx.Module):
+    H_function: callable
+    tsave_function: callable
+
+    def __call__(
+        self,
+        parameters: Array | dict,
+        method: Method = Tsit5(),  # noqa B008
+        gradient: Gradient | None = None,
+        options: dq.Options = dq.Options(),  # noqa B008
+    ) -> tuple[Result, TimeQArray]:
+        raise NotImplementedError
+
+
+class SolveModel(Model):
+    exp_ops: Array | None
+
+
+class PropagatorModel(Model):
+    pass
+
+
+class SESolveModel(SolveModel):
+    r"""Model for Schrödinger-equation optimization.
+
+    When called with the parameters we optimize over returns the results of `sesolve`
+    as well as the updated Hamiltonian.
+    """
+
+    initial_states: QArrayLike
+
+    def __call__(
+        self,
+        parameters: Array | dict,
+        method: Method = Tsit5(),  # noqa B008
+        gradient: Gradient | None = None,
+        options: dq.Options = dq.Options(),  # noqa B008
+    ) -> tuple[Result, TimeQArray]:
+        new_H = self.H_function(parameters)
+        new_tsave = self.tsave_function(parameters)
+        result = dq.sesolve(
+            new_H,
+            self.initial_states,
+            new_tsave,
+            exp_ops=self.exp_ops,
+            method=method,
+            gradient=gradient,
+            options=options,
+        )
+        return result, new_H
+
+
+class MESolveModel(SolveModel):
+    r"""Model for Lindblad-master-equation optimization.
+
+    When called with the parameters we optimize over returns the results of `mesolve`
+    as well as the updated Hamiltonian.
+    """
+
+    initial_states: QArrayLike
+    jump_ops: list[QArrayLike | TimeQArray]
+
+    def __call__(
+        self,
+        parameters: Array | dict,
+        method: Method = Tsit5(),  # noqa B008
+        gradient: Gradient | None = None,
+        options: dq.Options = dq.Options(),  # noqa B008
+    ) -> tuple[Result, TimeQArray]:
+        new_H = self.H_function(parameters)
+        new_tsave = self.tsave_function(parameters)
+        result = dq.mesolve(
+            new_H,
+            self.jump_ops,
+            self.initial_states,
+            new_tsave,
+            exp_ops=self.exp_ops,
+            method=method,
+            gradient=gradient,
+            options=options,
+        )
+        return result, new_H
+
+
+class SEPropagatorModel(PropagatorModel):
+    r"""Model for Schrödinger-equation propagator optimization.
+
+    When called with the parameters we optimize over returns the results of
+    `sepropagate` as well as the updated Hamiltonian.
+    """
+
+    def __call__(
+        self,
+        parameters: Array | dict,
+        method: Method = Tsit5(),  # noqa B008
+        gradient: Gradient | None = None,
+        options: dq.Options = dq.Options(),  # noqa B008
+    ) -> tuple[Result, TimeQArray]:
+        new_H = self.H_function(parameters)
+        new_tsave = self.tsave_function(parameters)
+        result = dq.sepropagator(
+            new_H, new_tsave, method=method, gradient=gradient, options=options
+        )
+        return result, new_H
+
+
+class MEPropagatorModel(PropagatorModel):
+    r"""Model for Lindblad-master-equation propagator optimization.
+
+    When called with the parameters we optimize over returns the results of `mesolve`
+    as well as the updated Hamiltonian.
+    """
+
+    jump_ops: list[QArrayLike | TimeQArray]
+
+    def __call__(
+        self,
+        parameters: Array | dict,
+        method: Method = Tsit5(),  # noqa B008
+        gradient: Gradient | None = None,
+        options: dq.Options = dq.Options(),  # noqa B008
+    ) -> tuple[Result, TimeQArray]:
+        new_H = self.H_function(parameters)
+        new_tsave = self.tsave_function(parameters)
+        result = dq.mepropagator(
+            new_H,
+            self.jump_ops,
+            new_tsave,
+            method=method,
+            gradient=gradient,
+            options=options,
+        )
+        return result, new_H
+    
+
 def sesolve_model(
     H_function: callable,
     psi0: QArrayLike,
@@ -272,149 +418,3 @@ def mepropagator_model(
     """
     H_function, tsave_or_function = _initialize_model(H_function, tsave_or_function)
     return MEPropagatorModel(H_function, tsave_or_function, jump_ops=jump_ops)
-
-
-def _initialize_model(
-    H_function: callable, tsave_or_function: ArrayLike | callable
-) -> [callable, callable]:
-    H_function = jtu.Partial(H_function)
-    if callable(tsave_or_function):
-        tsave_function = jtu.Partial(tsave_or_function)
-    else:
-        tsave_function = jtu.Partial(lambda _: tsave_or_function)
-    return H_function, tsave_function
-
-
-class Model(eqx.Module):
-    H_function: callable
-    tsave_function: callable
-
-    def __call__(
-        self,
-        parameters: Array | dict,
-        method: Method = Tsit5(),  # noqa B008
-        gradient: Gradient | None = None,
-        options: dq.Options = dq.Options(),  # noqa B008
-    ) -> tuple[Result, TimeQArray]:
-        raise NotImplementedError
-
-
-class SolveModel(Model):
-    exp_ops: Array | None
-
-
-class PropagatorModel(Model):
-    pass
-
-
-class SESolveModel(SolveModel):
-    r"""Model for Schrödinger-equation optimization.
-
-    When called with the parameters we optimize over returns the results of `sesolve`
-    as well as the updated Hamiltonian.
-    """
-
-    initial_states: QArrayLike
-
-    def __call__(
-        self,
-        parameters: Array | dict,
-        method: Method = Tsit5(),  # noqa B008
-        gradient: Gradient | None = None,
-        options: dq.Options = dq.Options(),  # noqa B008
-    ) -> tuple[Result, TimeQArray]:
-        new_H = self.H_function(parameters)
-        new_tsave = self.tsave_function(parameters)
-        result = dq.sesolve(
-            new_H,
-            self.initial_states,
-            new_tsave,
-            exp_ops=self.exp_ops,
-            method=method,
-            gradient=gradient,
-            options=options,
-        )
-        return result, new_H
-
-
-class MESolveModel(SolveModel):
-    r"""Model for Lindblad-master-equation optimization.
-
-    When called with the parameters we optimize over returns the results of `mesolve`
-    as well as the updated Hamiltonian.
-    """
-
-    initial_states: QArrayLike
-    jump_ops: list[QArrayLike | TimeQArray]
-
-    def __call__(
-        self,
-        parameters: Array | dict,
-        method: Method = Tsit5(),  # noqa B008
-        gradient: Gradient | None = None,
-        options: dq.Options = dq.Options(),  # noqa B008
-    ) -> tuple[Result, TimeQArray]:
-        new_H = self.H_function(parameters)
-        new_tsave = self.tsave_function(parameters)
-        result = dq.mesolve(
-            new_H,
-            self.jump_ops,
-            self.initial_states,
-            new_tsave,
-            exp_ops=self.exp_ops,
-            method=method,
-            gradient=gradient,
-            options=options,
-        )
-        return result, new_H
-
-
-class SEPropagatorModel(PropagatorModel):
-    r"""Model for Schrödinger-equation propagator optimization.
-
-    When called with the parameters we optimize over returns the results of
-    `sepropagate` as well as the updated Hamiltonian.
-    """
-
-    def __call__(
-        self,
-        parameters: Array | dict,
-        method: Method = Tsit5(),  # noqa B008
-        gradient: Gradient | None = None,
-        options: dq.Options = dq.Options(),  # noqa B008
-    ) -> tuple[Result, TimeQArray]:
-        new_H = self.H_function(parameters)
-        new_tsave = self.tsave_function(parameters)
-        result = dq.sepropagator(
-            new_H, new_tsave, method=method, gradient=gradient, options=options
-        )
-        return result, new_H
-
-
-class MEPropagatorModel(PropagatorModel):
-    r"""Model for Lindblad-master-equation propagator optimization.
-
-    When called with the parameters we optimize over returns the results of `mesolve`
-    as well as the updated Hamiltonian.
-    """
-
-    jump_ops: list[QArrayLike | TimeQArray]
-
-    def __call__(
-        self,
-        parameters: Array | dict,
-        method: Method = Tsit5(),  # noqa B008
-        gradient: Gradient | None = None,
-        options: dq.Options = dq.Options(),  # noqa B008
-    ) -> tuple[Result, TimeQArray]:
-        new_H = self.H_function(parameters)
-        new_tsave = self.tsave_function(parameters)
-        result = dq.mepropagator(
-            new_H,
-            self.jump_ops,
-            new_tsave,
-            method=method,
-            gradient=gradient,
-            options=options,
-        )
-        return result, new_H
